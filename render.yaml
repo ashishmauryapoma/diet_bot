@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: diet-tracker-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_SHEETS_CREDENTIALS_JSON
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: AUTHORIZED_USER_ID
+        sync: false
+      - key: BOT_PASSWORD_HASH
+        sync: false
+      - key: DEFAULT_CALORIE_LIMIT
+        value: "2000"
+      - key: DEFAULT_PROTEIN_GOAL
+        value: "120"
+      - key: DEFAULT_CARBS_GOAL
+        value: "250"
+      - key: DEFAULT_FAT_GOAL
+        value: "65"
+      - key: DEFAULT_FIBER_GOAL
+        value: "30"
+      - key: DEFAULT_WATER_GOAL_ML
+        value: "2500"
+      - key: DEFAULT_TIMEZONE
+        value: "Asia/Kolkata"
