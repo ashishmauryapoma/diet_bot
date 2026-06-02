@@ -2,10 +2,7 @@
 bot.py — DietTrackerBot main entry point
 Single-user, password-protected nutrition + water tracker
 """
-import asyncio
 import logging
-import os
-from datetime import datetime
 from functools import wraps
 
 import pytz
@@ -26,15 +23,15 @@ from handlers.auth import (
     handle_setup_password_input,
     handle_verify_prompt,
     handle_verify_password_input,
-    verified_sessions,
 )
 from handlers.commands import (
     cmd_daily, cmd_edit, cmd_help, cmd_profile, cmd_remaining,
-    cmd_start, cmd_water, generic_callback,
-    meal_type_callback, profile_edit_callback, profile_field_callback,
+    cmd_start, cmd_water, cmd_weekly, generic_callback,
+    profile_edit_callback, profile_field_callback,
+    _tz_now, _date_str,
 )
 from handlers.food_image import handle_food_photo, img_meal_type_callback
-from handlers.food_text import handle_food_text, meal_type_keyboard
+from handlers.food_text import handle_food_text, meal_type_callback
 from handlers.water import water_button_callback
 from services.sheets import sheets_service
 
@@ -62,7 +59,6 @@ async def auth_gate(update: Update, context) -> bool:
         return True
 
     if state == "first_setup":
-        # Check if we're already awaiting password input
         if await handle_setup_password_input(update, context):
             return False
         await handle_first_setup_prompt(update, context)
@@ -89,43 +85,41 @@ def auth_required(handler):
     return wrapper
 
 
-# ── Wrap all handlers ──────────────────────────────────────────────────────────
+# ── Wrapped handlers ───────────────────────────────────────────────────────────
 
 @auth_required
-async def _cmd_start(u, c):   return await cmd_start(u, c)
+async def _cmd_start(u, c):     return await cmd_start(u, c)
 
 @auth_required
-async def _cmd_help(u, c):    return await cmd_help(u, c)
+async def _cmd_help(u, c):      return await cmd_help(u, c)
 
 @auth_required
-async def _cmd_daily(u, c):   return await cmd_daily(u, c)
+async def _cmd_daily(u, c):     return await cmd_daily(u, c)
 
 @auth_required
-async def _cmd_weekly(u, c):
-    from handlers.commands import cmd_weekly
-    return await cmd_weekly(u, c)
+async def _cmd_weekly(u, c):    return await cmd_weekly(u, c)
 
 @auth_required
-async def _cmd_profile(u, c): return await cmd_profile(u, c)
+async def _cmd_profile(u, c):   return await cmd_profile(u, c)
 
 @auth_required
-async def _cmd_water(u, c):   return await cmd_water(u, c)
+async def _cmd_water(u, c):     return await cmd_water(u, c)
 
 @auth_required
 async def _cmd_remaining(u, c): return await cmd_remaining(u, c)
 
 @auth_required
-async def _cmd_edit(u, c):    return await cmd_edit(u, c)
+async def _cmd_edit(u, c):      return await cmd_edit(u, c)
 
 @auth_required
-async def _food_text(u, c):   return await handle_food_text(u, c)
+async def _food_text(u, c):     return await handle_food_text(u, c)
 
 @auth_required
-async def _food_photo(u, c):  return await handle_food_photo(u, c)
+async def _food_photo(u, c):    return await handle_food_photo(u, c)
 
 @auth_required
 async def _callback(u, c):
-    """Route all inline callbacks."""
+    """Route all inline callbacks to the correct handler."""
     data = u.callback_query.data if u.callback_query else ""
     if data.startswith("water_"):
         return await water_button_callback(u, c)
@@ -152,7 +146,6 @@ async def _push_message(app: Application, text: str) -> None:
 
 
 def _setup_scheduler(app: Application) -> AsyncIOScheduler:
-    from handlers.commands import _tz_now, _date_str
 
     async def reminder_morning():
         await _push_message(app, "🌅 Good morning! Ready to track today? Log your breakfast when you're ready 🍳")
@@ -162,60 +155,43 @@ def _setup_scheduler(app: Application) -> AsyncIOScheduler:
             return
         profile = await sheets_service.get_profile()
         tz_str = profile.get("timezone") or config.DEFAULT_TIMEZONE
-        now = _tz_now(tz_str)
-        date_str = _date_str(now)
-        from services.sheets import sheets_service as ss
-        entries = await ss.get_water_entries_for_date(date_str)
+        date_str = _date_str(_tz_now(tz_str))
+        entries = await sheets_service.get_water_entries_for_date(date_str)
         total = sum(e.amount_ml for e in entries)
         if total < 1000:
-            await _push_message(
-                app,
-                f"💧 Stay hydrated! You've only had *{total} ml* so far today. Time to drink up!"
-            )
+            await _push_message(app, f"💧 Stay hydrated! You've only had *{total} ml* so far today.")
 
     async def reminder_food_evening():
         if not config.AUTHORIZED_USER_ID:
             return
         profile = await sheets_service.get_profile()
         tz_str = profile.get("timezone") or config.DEFAULT_TIMEZONE
-        now = _tz_now(tz_str)
-        date_str = _date_str(now)
-        from services.sheets import sheets_service as ss
-        entries = await ss.get_food_entries_for_date(date_str)
+        date_str = _date_str(_tz_now(tz_str))
+        entries = await sheets_service.get_food_entries_for_date(date_str)
         if len(entries) < 2:
-            await _push_message(
-                app,
-                "🍽️ You haven't logged much today. What did you eat? Send me a description or photo!"
-            )
+            await _push_message(app, "🍽️ You haven't logged much today. What did you eat? Send me a description or photo!")
 
     async def reminder_water_night():
         if not config.AUTHORIZED_USER_ID:
             return
         profile = await sheets_service.get_profile()
         tz_str = profile.get("timezone") or config.DEFAULT_TIMEZONE
-        now = _tz_now(tz_str)
-        date_str = _date_str(now)
+        date_str = _date_str(_tz_now(tz_str))
         water_goal = int(profile.get("water_goal_ml") or config.DEFAULT_WATER_GOAL_ML)
-        from services.sheets import sheets_service as ss
-        entries = await ss.get_water_entries_for_date(date_str)
+        entries = await sheets_service.get_water_entries_for_date(date_str)
         total = sum(e.amount_ml for e in entries)
         if total < 2000:
-            await _push_message(
-                app,
-                f"💧 *{total} ml* logged. Push to hit your *{water_goal} ml* goal tonight!"
-            )
+            await _push_message(app, f"💧 *{total} ml* logged. Push to hit your *{water_goal} ml* goal tonight!")
 
     async def reminder_daily_summary():
         if not config.AUTHORIZED_USER_ID:
             return
         profile = await sheets_service.get_profile()
         tz_str = profile.get("timezone") or config.DEFAULT_TIMEZONE
-        now = _tz_now(tz_str)
-        date_str = _date_str(now)
-        from services.sheets import sheets_service as ss
-        food_e = await ss.get_food_entries_for_date(date_str)
-        water_e = await ss.get_water_entries_for_date(date_str)
-        total_cal   = sum(e.calories for e in food_e)
+        date_str = _date_str(_tz_now(tz_str))
+        food_e  = await sheets_service.get_food_entries_for_date(date_str)
+        water_e = await sheets_service.get_water_entries_for_date(date_str)
+        total_cal   = sum(e.calories  for e in food_e)
         total_prot  = sum(e.protein_g for e in food_e)
         total_water = sum(w.amount_ml for w in water_e)
         await _push_message(
@@ -224,21 +200,20 @@ def _setup_scheduler(app: Application) -> AsyncIOScheduler:
             "See you tomorrow! 👋"
         )
 
-    # Use user's timezone for scheduling (default Asia/Kolkata = UTC+5:30)
+    # Try to read user's timezone from sheet; fall back to default
     tz_str = config.DEFAULT_TIMEZONE
     try:
         profile_sync = sheets_service._sync_get_profile()
         tz_str = profile_sync.get("timezone") or tz_str
     except Exception:
         pass
-    user_tz = pytz.timezone(tz_str)
 
-    scheduler = AsyncIOScheduler(timezone=user_tz)
-    scheduler.add_job(reminder_morning,        "cron", hour=8,  minute=0)
-    scheduler.add_job(reminder_water_afternoon,"cron", hour=15, minute=0)
-    scheduler.add_job(reminder_food_evening,   "cron", hour=20, minute=0)
-    scheduler.add_job(reminder_water_night,    "cron", hour=21, minute=0)
-    scheduler.add_job(reminder_daily_summary,  "cron", hour=23, minute=55)
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone(tz_str))
+    scheduler.add_job(reminder_morning,         "cron", hour=8,  minute=0)
+    scheduler.add_job(reminder_water_afternoon, "cron", hour=15, minute=0)
+    scheduler.add_job(reminder_food_evening,    "cron", hour=20, minute=0)
+    scheduler.add_job(reminder_water_night,     "cron", hour=21, minute=0)
+    scheduler.add_job(reminder_daily_summary,   "cron", hour=23, minute=55)
     return scheduler
 
 
@@ -247,7 +222,6 @@ def _setup_scheduler(app: Application) -> AsyncIOScheduler:
 def build_app() -> Application:
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start",     _cmd_start))
     app.add_handler(CommandHandler("help",      _cmd_help))
     app.add_handler(CommandHandler("daily",     _cmd_daily))
@@ -257,13 +231,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("remaining", _cmd_remaining))
     app.add_handler(CommandHandler("edit",      _cmd_edit))
 
-    # Photos
     app.add_handler(MessageHandler(filters.PHOTO, _food_photo))
-
-    # Text (food descriptions, onboarding, profile edits, password inputs)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _food_text))
-
-    # Inline keyboards
     app.add_handler(CallbackQueryHandler(_callback))
 
     return app
