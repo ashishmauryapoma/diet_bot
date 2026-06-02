@@ -1,21 +1,20 @@
 """
-services/gemini.py — Gemini API integration for text + vision food analysis
+services/gemini.py — Gemini REST API (no google-generativeai SDK, no protobuf)
+Calls https://generativelanguage.googleapis.com directly via httpx.
 """
-import asyncio
 import base64
 import json
 import logging
 import time
 from collections import deque
-from typing import Optional
 
-import google.generativeai as genai
+import httpx
 
 import config
 
 logger = logging.getLogger(__name__)
 
-# ── Rate limiter ────────────────────────────────────────────────────────────────
+# ── Rate limiter (5 calls / 60 s) ──────────────────────────────────────────────
 _call_times: deque = deque()
 
 def _check_rate_limit() -> None:
@@ -26,9 +25,11 @@ def _check_rate_limit() -> None:
         raise RuntimeError("Rate limit: too many Gemini calls. Wait a moment and try again.")
     _call_times.append(now)
 
-# ── Initialise ──────────────────────────────────────────────────────────────────
-genai.configure(api_key=config.GEMINI_API_KEY)
-_model = genai.GenerativeModel(config.GEMINI_MODEL)
+# ── Base URL ────────────────────────────────────────────────────────────────────
+_BASE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{config.GEMINI_MODEL}:generateContent"
+)
 
 TEXT_SYSTEM = (
     "You are a certified nutritionist AI. Extract nutritional data accurately. "
@@ -61,6 +62,7 @@ Return this exact JSON:
 
 VISION_TEMPLATE = """{system}
 
+Return this exact JSON describing the food in the image:
 {{
   "food_name": "string (combined name of the meal)",
   "calories": integer,
@@ -87,30 +89,52 @@ def _parse_json(raw: str) -> dict:
     return json.loads(clean)
 
 
+def _extract_text(response: dict) -> str:
+    """Pull the text out of a Gemini REST response."""
+    try:
+        return response["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as e:
+        raise ValueError(f"Unexpected Gemini response shape: {response}") from e
+
+
+async def _post(payload: dict) -> dict:
+    """Async POST to Gemini REST endpoint."""
+    url = f"{_BASE}?key={config.GEMINI_API_KEY}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def analyze_food_text(user_input: str) -> dict:
-    """Analyze food described in text. Returns parsed dict."""
+    """Analyse food described in text. Returns parsed dict."""
     _check_rate_limit()
     prompt = TEXT_TEMPLATE.format(system=TEXT_SYSTEM, user_input=user_input)
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, _model.generate_content, prompt)
-    return _parse_json(response.text)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    response = await _post(payload)
+    return _parse_json(_extract_text(response))
 
 
 async def analyze_food_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
-    """Analyze food from image bytes. Returns parsed dict."""
+    """Analyse food from image bytes. Returns parsed dict."""
     _check_rate_limit()
     b64 = base64.b64encode(image_bytes).decode()
     prompt = VISION_TEMPLATE.format(system=VISION_SYSTEM)
-    contents = [
-        {"mime_type": mime_type, "data": b64},
-        prompt,
-    ]
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, _model.generate_content, contents)
-    return _parse_json(response.text)
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": mime_type, "data": b64}},
+                {"text": prompt},
+            ]
+        }]
+    }
+    response = await _post(payload)
+    return _parse_json(_extract_text(response))
 
 
 async def re_analyze_food(original_food: str, correction: str) -> dict:
-    """Re-analyze a food entry given a correction."""
+    """Re-analyse a food entry given a correction."""
     combined = f"{original_food} — correction: {correction}"
     return await analyze_food_text(combined)
