@@ -200,15 +200,9 @@ def _setup_scheduler(app: Application) -> AsyncIOScheduler:
             "See you tomorrow! 👋"
         )
 
-    # Try to read user's timezone from sheet; fall back to default
-    tz_str = config.DEFAULT_TIMEZONE
-    try:
-        profile_sync = sheets_service._sync_get_profile()
-        tz_str = profile_sync.get("timezone") or tz_str
-    except Exception:
-        pass
-
-    scheduler = AsyncIOScheduler(timezone=pytz.timezone(tz_str))
+    # Use default timezone for scheduler init; each job reads the real timezone
+    # from the sheet at fire-time, so this only affects the cron wall-clock.
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone(config.DEFAULT_TIMEZONE))
     scheduler.add_job(reminder_morning,         "cron", hour=8,  minute=0)
     scheduler.add_job(reminder_water_afternoon, "cron", hour=15, minute=0)
     scheduler.add_job(reminder_food_evening,    "cron", hour=20, minute=0)
